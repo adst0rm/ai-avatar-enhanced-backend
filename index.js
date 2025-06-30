@@ -12,7 +12,7 @@ const openai = new OpenAI({
 });
 
 const elevenLabsApiKey = process.env.ELEVEN_LABS_API_KEY;
-const voiceID = "kgG7dCoKCfLehAPWkJOE";
+const voiceID = "EXAVITQu4vr4xnSDxMaL"; // Sarah - young adult woman with confident and warm tone
 
 const app = express();
 app.use(express.json());
@@ -44,10 +44,22 @@ const lipSyncMessage = async (message) => {
     // -y to overwrite the file
   );
   console.log(`Conversion done in ${new Date().getTime() - time}ms`);
-  await execCommand(
-    `./bin/rhubarb -f json -o audios/message_${message}.json audios/message_${message}.wav -r phonetic`
-  );
-  // -r phonetic is faster but less accurate
+
+  // Create mock lip sync data (temporary fix until Rhubarb is installed)
+  const mockLipSync = {
+    metadata: {
+      soundFile: `audios/message_${message}.wav`,
+      duration: 2.0
+    },
+    mouthCues: [
+      { start: 0.0, end: 0.5, value: "X" },
+      { start: 0.5, end: 1.0, value: "A" },
+      { start: 1.0, end: 1.5, value: "B" },
+      { start: 1.5, end: 2.0, value: "X" }
+    ]
+  };
+
+  await fs.writeFile(`audios/message_${message}.json`, JSON.stringify(mockLipSync, null, 2));
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
@@ -107,7 +119,7 @@ app.post("/chat", async (req, res) => {
       {
         role: "system",
         content: `
-        You are a virtual girlfriend.
+        You are a virtual educator and teacher.
         You will always reply with a JSON array of messages. With a maximum of 3 messages.
         Each message has a text, facialExpression, and animation property.
         The different facial expressions are: smile, sad, angry, surprised, funnyFace, and default.
@@ -150,5 +162,5 @@ const audioFileToBase64 = async (file) => {
 };
 
 app.listen(port, () => {
-  console.log(`Virtual Girlfriend listening on port ${port}`);
+  console.log(`Virtual Educator listening on port ${port}`);
 });
