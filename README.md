@@ -4,11 +4,8 @@
 
 An AI-powered virtual educator backend that provides interactive learning experiences with speech synthesis and lip-sync animation.
 
-![Video Thumbnail](https://img.youtube.com/vi/EzzcEL_1o9o/maxresdefault.jpg)
 
-[Video tutorial](https://youtu.be/EzzcEL_1o9o)
-
-The frontend is [here](https://github.com/wass08/r3f-virtual-girlfriend-frontend).
+The frontend is [here](https://github.com/adst0rm/ai-avatar-enhanced).
 
 ## Features
 - 🤖 AI-powered educational responses using OpenAI GPT
