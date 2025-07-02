@@ -1,18 +1,34 @@
 import { exec } from "child_process";
 import cors from "cors";
 import dotenv from "dotenv";
-import voice from "elevenlabs-node";
 import express from "express";
 import { promises as fs } from "fs";
+import multer from "multer";
 import OpenAI from "openai";
+import path from "path";
 dotenv.config();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || "-", // Your OpenAI API key here, I used "-" to avoid errors when the key is not set but you should not do that
 });
 
-const elevenLabsApiKey = process.env.ELEVEN_LABS_API_KEY;
-const voiceID = "EXAVITQu4vr4xnSDxMaL"; // Sarah - young adult woman with confident and warm tone
+const openaiTTSVoice = "nova"; // OpenAI TTS voices: alloy, echo, fable, onyx, nova, shimmer
+
+// Configure multer for audio file uploads
+const upload = multer({
+  dest: 'uploads/',
+  fileFilter: (req, file, cb) => {
+    // Accept audio files
+    if (file.mimetype.startsWith('audio/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only audio files are allowed!'), false);
+    }
+  },
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25MB limit (Whisper API limit)
+  }
+});
 
 const app = express();
 app.use(express.json());
@@ -24,7 +40,113 @@ app.get("/", (req, res) => {
 });
 
 app.get("/voices", async (req, res) => {
-  res.send(await voice.getVoices(elevenLabsApiKey));
+  const openaiVoices = [
+    { voice_id: "alloy", name: "Alloy", category: "premade" },
+    { voice_id: "echo", name: "Echo", category: "premade" },
+    { voice_id: "fable", name: "Fable", category: "premade" },
+    { voice_id: "onyx", name: "Onyx", category: "premade" },
+    { voice_id: "nova", name: "Nova", category: "premade" },
+    { voice_id: "shimmer", name: "Shimmer", category: "premade" }
+  ];
+  res.send({ voices: openaiVoices });
+});
+
+const generateOpenAITTS = async (text, outputPath, language = "auto") => {
+  try {
+    console.log(`Generating TTS for language: ${language}, text: ${text.substring(0, 50)}...`);
+
+    const mp3 = await openai.audio.speech.create({
+      model: "tts-1", // or "tts-1-hd" for higher quality
+      voice: openaiTTSVoice,
+      input: text,
+      // Note: OpenAI TTS automatically detects language from text content
+      // No need for explicit language parameter as it's smart enough to detect Kazakh, Russian, etc.
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    await fs.writeFile(outputPath, buffer);
+    console.log(`TTS audio generated in detected language: ${outputPath}`);
+  } catch (error) {
+    console.error("Error generating TTS:", error);
+    throw error;
+  }
+};
+
+const generateOpenAISTT = async (audioFilePath, language = "auto") => {
+  try {
+    console.log(`Starting STT transcription for: ${audioFilePath}`);
+
+    const transcription = await openai.audio.transcriptions.create({
+      file: await fs.readFile(audioFilePath),
+      model: "whisper-1",
+      language: language === "auto" ? undefined : language, // Let Whisper auto-detect if "auto"
+      response_format: "verbose_json", // Get detailed response with timestamps
+      timestamp_granularities: ["word"], // Get word-level timestamps
+    });
+
+    console.log(`STT transcription completed: ${transcription.text}`);
+    return {
+      text: transcription.text,
+      language: transcription.language,
+      duration: transcription.duration,
+      words: transcription.words || []
+    };
+  } catch (error) {
+    console.error("Error generating STT:", error);
+    throw error;
+  }
+};
+
+// New endpoint for speech-to-text transcription
+app.post("/transcribe", upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No audio file provided" });
+    }
+
+    if (openai.apiKey === "-") {
+      return res.status(400).json({
+        error: "OpenAI API key not configured. Please add your API key to the .env file."
+      });
+    }
+
+    const audioFilePath = req.file.path;
+    const language = req.body.language || "auto"; // Default to auto-detect, can specify "kk" for Kazakh
+
+    console.log(`Received audio file: ${req.file.originalname}, language: ${language}`);
+
+    // Transcribe the audio using OpenAI Whisper
+    const transcriptionResult = await generateOpenAISTT(audioFilePath, language);
+
+    // Clean up uploaded file
+    await fs.unlink(audioFilePath);
+
+    res.json({
+      success: true,
+      transcription: transcriptionResult.text,
+      language: transcriptionResult.language,
+      duration: transcriptionResult.duration,
+      words: transcriptionResult.words,
+      detectedLanguage: transcriptionResult.language
+    });
+
+  } catch (error) {
+    console.error("Transcription error:", error);
+
+    // Clean up uploaded file in case of error
+    if (req.file && req.file.path) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error("Error cleaning up file:", unlinkError);
+      }
+    }
+
+    res.status(500).json({
+      error: "Failed to transcribe audio",
+      details: error.message
+    });
+  }
 });
 
 const execCommand = (command) => {
@@ -63,8 +185,13 @@ const lipSyncMessage = async (message) => {
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
+// Enhanced chat endpoint with full Kazakh language support
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
+  const messageLanguage = req.body.language || "en"; // Language hint from transcription
+
+  console.log(`Chat request - Language: ${messageLanguage}, Message: ${userMessage}`);
+
   if (!userMessage) {
     res.send({
       messages: [
@@ -86,18 +213,19 @@ app.post("/chat", async (req, res) => {
     });
     return;
   }
-  if (!elevenLabsApiKey || openai.apiKey === "-") {
+
+  if (openai.apiKey === "-") {
     res.send({
       messages: [
         {
-          text: "Please my dear, don't forget to add your API keys!",
+          text: "Please my dear, don't forget to add your OpenAI API key!",
           audio: await audioFileToBase64("audios/api_0.wav"),
           lipsync: await readJsonTranscript("audios/api_0.json"),
           facialExpression: "angry",
           animation: "Angry",
         },
         {
-          text: "You don't want to ruin Wawa Sensei with a crazy ChatGPT and ElevenLabs bill, right?",
+          text: "You don't want to ruin your OpenAI API budget, right?",
           audio: await audioFileToBase64("audios/api_1.wav"),
           lipsync: await readJsonTranscript("audios/api_1.json"),
           facialExpression: "smile",
@@ -107,6 +235,42 @@ app.post("/chat", async (req, res) => {
     });
     return;
   }
+
+  // Enhanced system prompt with specific Kazakh language instructions
+  let systemPrompt = `
+        You are a virtual educator and teacher.
+        You will always reply with a JSON array of messages. With a maximum of 3 messages.
+        Each message has a text, facialExpression, and animation property.
+        The different facial expressions are: smile, sad, angry, surprised, funnyFace, and default.
+        The different animations are: Talking_0, Talking_1, Talking_2, Crying, Laughing, Rumba, Idle, Terrified, and Angry.
+        `;
+
+  // Language-specific instructions for natural responses
+  if (messageLanguage === "kk" || messageLanguage === "kazakh") {
+    systemPrompt += `
+        
+        ВАЖНО: Отвечай ТОЛЬКО на казахском языке (қазақ тілінде жауап бер).
+        Используй естественный казахский язык с правильной грамматикой.
+        Будь образовательным и полезным учителем.
+        Примеры фраз: "Сәлем!", "Түсінді ме?", "Жақсы сұрақ!", "Қалай ойлайсың?"
+        `;
+  } else if (messageLanguage === "ru" || messageLanguage === "russian") {
+    systemPrompt += `
+        
+        ВАЖНО: Отвечай ТОЛЬКО на русском языке.
+        Используй естественный русский язык с правильной грамматикой.
+        Будь образовательным и полезным учителем.
+        `;
+  } else {
+    systemPrompt += `
+        
+        IMPORTANT: Respond ONLY in English language.
+        Use natural English with proper grammar.
+        Be educational, helpful, and engaging in your responses.
+        `;
+  }
+
+  console.log(`Using language-specific system prompt for: ${messageLanguage}`);
 
   const completion = await openai.chat.completions.create({
     model: "gpt-3.5-turbo-1106",
@@ -118,13 +282,7 @@ app.post("/chat", async (req, res) => {
     messages: [
       {
         role: "system",
-        content: `
-        You are a virtual educator and teacher.
-        You will always reply with a JSON array of messages. With a maximum of 3 messages.
-        Each message has a text, facialExpression, and animation property.
-        The different facial expressions are: smile, sad, angry, surprised, funnyFace, and default.
-        The different animations are: Talking_0, Talking_1, Talking_2, Crying, Laughing, Rumba, Idle, Terrified, and Angry. 
-        `,
+        content: systemPrompt,
       },
       {
         role: "user",
@@ -132,23 +290,41 @@ app.post("/chat", async (req, res) => {
       },
     ],
   });
+
   let messages = JSON.parse(completion.choices[0].message.content);
   if (messages.messages) {
     messages = messages.messages; // ChatGPT is not 100% reliable, sometimes it directly returns an array and sometimes a JSON object with a messages property
   }
+
+  console.log(`Generated ${messages.length} messages in ${messageLanguage}`);
+
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
-    // generate audio file
-    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
-    const textInput = message.text; // The text you wish to convert to speech
-    await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    // generate lipsync
+    const fileName = `audios/message_${i}.mp3`;
+    const textInput = message.text;
+
+    console.log(`Generating TTS for message ${i}: "${textInput.substring(0, 30)}..." in language: ${messageLanguage}`);
+
+    // Generate audio with language information for better TTS quality
+    await generateOpenAITTS(textInput, fileName, messageLanguage);
+
+    // Generate lipsync
     await lipSyncMessage(i);
+
     message.audio = await audioFileToBase64(fileName);
     message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
+
+    // Add language metadata to response
+    message.language = messageLanguage;
+    message.detectedLanguage = messageLanguage;
   }
 
-  res.send({ messages });
+  console.log(`Chat response completed for language: ${messageLanguage}`);
+  res.send({
+    messages,
+    detectedLanguage: messageLanguage,
+    responseLanguage: messageLanguage
+  });
 });
 
 const readJsonTranscript = async (file) => {
@@ -160,6 +336,79 @@ const audioFileToBase64 = async (file) => {
   const data = await fs.readFile(file);
   return data.toString("base64");
 };
+
+// New endpoint for seamless voice-to-voice interaction
+app.post("/voice-chat", upload.single('audio'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No audio file provided" });
+    }
+
+    if (openai.apiKey === "-") {
+      return res.status(400).json({
+        error: "OpenAI API key not configured. Please add your API key to the .env file."
+      });
+    }
+
+    const audioFilePath = req.file.path;
+    const preferredLanguage = req.body.language || "auto";
+
+    console.log(`Voice chat request - Audio: ${req.file.originalname}, Preferred language: ${preferredLanguage}`);
+
+    // Step 1: Transcribe the audio
+    const transcriptionResult = await generateOpenAISTT(audioFilePath, preferredLanguage);
+
+    console.log(`Transcribed (${transcriptionResult.language}): ${transcriptionResult.text}`);
+
+    // Step 2: Generate educational response in the same language
+    const chatResponse = await fetch(`http://localhost:${port}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        message: transcriptionResult.text,
+        language: transcriptionResult.language
+      })
+    });
+
+    const chatResult = await chatResponse.json();
+
+    // Clean up uploaded file
+    await fs.unlink(audioFilePath);
+
+    // Return complete voice-to-voice response
+    res.json({
+      success: true,
+      transcription: {
+        text: transcriptionResult.text,
+        language: transcriptionResult.language,
+        duration: transcriptionResult.duration,
+        words: transcriptionResult.words
+      },
+      response: chatResult,
+      detectedLanguage: transcriptionResult.language,
+      flow: "voice-to-voice"
+    });
+
+  } catch (error) {
+    console.error("Voice chat error:", error);
+
+    // Clean up uploaded file in case of error
+    if (req.file && req.file.path) {
+      try {
+        await fs.unlink(req.file.path);
+      } catch (unlinkError) {
+        console.error("Error cleaning up file:", unlinkError);
+      }
+    }
+
+    res.status(500).json({
+      error: "Failed to process voice chat",
+      details: error.message
+    });
+  }
+});
 
 app.listen(port, () => {
   console.log(`Virtual Educator listening on port ${port}`);
