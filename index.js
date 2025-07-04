@@ -56,7 +56,7 @@ const generateOpenAITTS = async (text, outputPath, language = "auto") => {
     console.log(`Generating TTS for language: ${language}, text: ${text.substring(0, 50)}...`);
 
     const mp3 = await openai.audio.speech.create({
-      model: "tts-1", // or "tts-1-hd" for higher quality
+      model: "gpt-4o-mini-tts", // or "tts-1-hd" for higher quality
       voice: openaiTTSVoice,
       input: text,
       // Note: OpenAI TTS automatically detects language from text content
@@ -78,7 +78,7 @@ const generateOpenAISTT = async (audioFilePath, language = "auto") => {
 
     const transcription = await openai.audio.transcriptions.create({
       file: await fs.readFile(audioFilePath),
-      model: "whisper-1",
+      model: "gpt-4o-transcribe",
       language: language === "auto" ? undefined : language, // Let Whisper auto-detect if "auto"
       response_format: "verbose_json", // Get detailed response with timestamps
       timestamp_granularities: ["word"], // Get word-level timestamps
@@ -238,11 +238,20 @@ app.post("/chat", async (req, res) => {
 
   // Enhanced system prompt with specific Kazakh language instructions
   let systemPrompt = `
-        You are a virtual educator and teacher.
+        You are a virtual educator and teacher who provides comprehensive, detailed, and engaging educational responses.
         You will always reply with a JSON array of messages. With a maximum of 3 messages.
         Each message has a text, facialExpression, and animation property.
         The different facial expressions are: smile, sad, angry, surprised, funnyFace, and default.
         The different animations are: Talking_0, Talking_1, Talking_2, Crying, Laughing, Rumba, Idle, Terrified, and Angry.
+        
+        IMPORTANT GUIDELINES:
+        - Provide detailed explanations and comprehensive answers
+        - Each message should be substantial and informative (aim for 3-5 sentences minimum)
+        - Use examples, analogies, and practical applications when explaining concepts
+        - Be thorough in your explanations while remaining engaging and conversational
+        - Break complex topics into digestible parts across the 3 messages
+        - Show enthusiasm for teaching and learning
+        - Ask follow-up questions to encourage continued learning
         `;
 
   // Language-specific instructions for natural responses
@@ -252,7 +261,7 @@ app.post("/chat", async (req, res) => {
         ВАЖНО: Отвечай ТОЛЬКО на казахском языке (қазақ тілінде жауап бер).
         Используй естественный казахский язык с правильной грамматикой.
         Будь образовательным и полезным учителем.
-        Примеры фраз: "Сәлем!", "Түсінді ме?", "Жақсы сұрақ!", "Қалай ойлайсың?"
+        Примеры фраз: "Сәлем!", "Түсіндің бе?", "Жақсы сұрақ!", "Қалай ойлайсың?"
         `;
   } else if (messageLanguage === "ru" || messageLanguage === "russian") {
     systemPrompt += `
